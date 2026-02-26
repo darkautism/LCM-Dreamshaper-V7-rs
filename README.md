@@ -2,6 +2,9 @@
 
 # LCM-Dreamshaper-V7-rs
 
+> Note: The tool automatically attempts to download a recompiled UNet RKNN from the HF repository `kautism/LCM_Dreamshaper_v7-RKNN-2.3.2` if present. If not found, it falls back to the original `whaoyang/LCM-Dreamshaper-V7-ONNX-rk3588-512x512-2.3.0` RKNN. All model downloads are handled by the hf-hub library (no manual caching required).
+
+
 **Fast text-to-image generation on Rockchip RK3588 NPU, powered by LCM Dreamshaper V7**
 
 [![][github-stars-shield]][github-stars-link]
@@ -46,9 +49,24 @@ Supports both a **CLI mode** for one-shot image generation and a **serve mode** 
 
 - **Hardware:** Rockchip RK3588 board (Orange Pi 5, Rock 5B, NanoPi R6C, …)
 - **OS:** Linux aarch64 with RKNPU2 kernel driver (`/dev/dri/renderD*`)
-- **Runtime:** `librknnrt.so` **2.3.2** (included in most recent vendor Linux images)
+- **Runtime:** `librknnrt.so` **2.3.2** (recommended)
 - **User permission:** member of the `render` group (or run as root)
 - **Rust toolchain:** stable (`rustup` recommended)
+
+
+### RKNN runtime (librknnrt.so)
+
+This project requires the Rockchip RKNN runtime library librknnrt.so to access the NPU. Installing the runtime typically requires root privileges and a platform-specific binary from your board vendor. If your distribution does not provide librknnrt.so, a copy can be downloaded from the Airockchip repository (raw aarch64 build):
+
+https://github.com/airockchip/rknn-toolkit2/raw/refs/heads/master/rknpu2/runtime/Linux/librknn_api/aarch64/librknnrt.so
+
+Installation notes:
+- Installing system libraries requires root. Place the .so under `/usr/lib/` or `/lib/` (or the vendor-specified location) and run `ldconfig` as root.
+- The binary will try to use whatever librknnrt.so is available on the system; for best results use version 2.3.2.
+- You do not need to recompile any model to install the runtime; recompilation is only necessary when the precompiled RKNN model is incompatible with your runtime (see "Building the UNet" section).
+- For NPU access also ensure the current user is in the `render` group (or run the tool as root): `sudo usermod -aG render $USER` and re-login.
+
+We intentionally do not ship or auto-install librknnrt.so because installing system libraries requires root and platform-specific handling; please install the runtime yourself following the vendor instructions or the link above.
 
 ---
 

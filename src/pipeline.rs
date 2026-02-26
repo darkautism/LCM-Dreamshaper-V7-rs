@@ -82,19 +82,24 @@ pub fn download_models() -> Result<(
 /// Return path to the UNet RKNN model compatible with librknnrt.so 2.3.2.
 /// Prefers locally recompiled model over the HF-hosted 2.3.0-compiled model.
 fn unet_model_path() -> Result<std::path::PathBuf> {
-    let local_path = dirs::cache_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
-        .join("lcm-rs")
-        .join("unet_v232.rknn");
-    if local_path.exists() {
-        eprintln!("  (using locally recompiled UNet for librknnrt 2.3.2)");
-        return Ok(local_path);
-    }
-    eprintln!("  WARNING: recompiled UNet not found at {}", local_path.display());
-    eprintln!("  Falling back to HF model (may crash on librknnrt.so 2.3.2)");
+    // Prefer user's HF repo (kautism) if they uploaded a recompiled UNet there.
     let api = Api::new().context("Failed to create HF Hub API")?;
+
+    // Try user-provided RKNN first
+    let user_repo = api.model("kautism/LCM_Dreamshaper_v7-RKNN-2.3.2".to_string());
+    match user_repo.get("unet/model.rknn") {
+        Ok(path) => {
+            eprintln!("  (using UNet from HF: kautism/LCM_Dreamshaper_v7-RKNN-2.3.2)");
+            return Ok(path);
+        }
+        Err(_) => {
+            eprintln!("  UNet not found in kautism HF repo; falling back to upstream whaoyang repo");
+        }
+    }
+
+    // Fallback to original repo
     let lcm_repo = api.model("whaoyang/LCM-Dreamshaper-V7-ONNX-rk3588-512x512-2.3.0".to_string());
-    lcm_repo.get("unet/model.rknn").context("Failed to download unet/model.rknn")
+    lcm_repo.get("unet/model.rknn").context("Failed to download unet/model.rknn from fallback repo")
 }
 
 /// Download CLIP tokenizer.json and cache it under ~/.cache/lcm-rs/.
