@@ -10,10 +10,15 @@ use axum::{
     routing::post,
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use rmcp::transport::{
+    StreamableHttpServerConfig,
+    streamable_http_server::{session::local::LocalSessionManager, tower::StreamableHttpService},
+};
 use serde::{Deserialize, Serialize};
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
+use crate::mcp::DreamshaperMcp;
 use crate::pipeline::{GenerateRequest, Pipeline};
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -142,14 +147,28 @@ pub async fn serve(host: &str, port: u16) -> Result<()> {
     let pipeline = tokio::task::block_in_place(Pipeline::load)?;
     let shared = Arc::new(Mutex::new(pipeline));
 
+    // MCP Streamable HTTP transport — one handler per session, sharing the pipeline.
+    let mcp_shared = shared.clone();
+    let mcp_service: StreamableHttpService<DreamshaperMcp, LocalSessionManager> =
+        StreamableHttpService::new(
+            move || Ok(DreamshaperMcp::new(mcp_shared.clone())),
+            Default::default(),
+            StreamableHttpServerConfig {
+                stateful_mode: true,
+                sse_keep_alive: Some(std::time::Duration::from_secs(15)),
+            },
+        );
+
     let app = Router::new()
         .route("/v1/images/generations", post(generate_images))
+        .nest_service("/mcp", mcp_service)
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(shared);
 
     let addr = format!("{}:{}", host, port);
-    eprintln!("🚀 Serving on http://{}/v1/images/generations", addr);
+    eprintln!("🚀 Serving on http://{}/v1/images/generations  (OpenAI API)", addr);
+    eprintln!("🤖 MCP endpoint:  http://{}/mcp  (Model Context Protocol)", addr);
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     axum::serve(listener, app).await?;

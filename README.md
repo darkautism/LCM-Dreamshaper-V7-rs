@@ -17,7 +17,7 @@
 
 A Rust implementation of the [LCM Dreamshaper V7](https://huggingface.co/SimianLuo/LCM_Dreamshaper_v7) diffusion pipeline, optimised for the **Rockchip RK3588 NPU** via the RKNN runtime. Generate 512×512 images in a few seconds directly on an Orange Pi 5 / Rock 5 / NanoPi R6C or any other RK3588 board — no GPU required.
 
-Supports both a **CLI mode** for one-shot image generation and a **serve mode** that exposes an **OpenAI-compatible `/v1/images/generations` endpoint**, so any OpenAI-compatible client can drive it out of the box.
+Supports both a **CLI mode** for one-shot image generation and a **serve mode** that exposes an **OpenAI-compatible `/v1/images/generations` endpoint** and a **[Model Context Protocol (MCP)](https://modelcontextprotocol.io) `/mcp` endpoint**, so any OpenAI-compatible client or MCP-enabled AI assistant (e.g. GitHub Copilot) can drive it out of the box.
 
 ---
 
@@ -27,6 +27,7 @@ Supports both a **CLI mode** for one-shot image generation and a **serve mode** 
 - ⚡ **LCM scheduling** — good-quality images in as few as 4 steps; 10 steps by default
 - 🖼️ **512 × 512 PNG output**
 - 🌐 **OpenAI-compatible REST API** (`POST /v1/images/generations`)
+- 🤖 **MCP server** (`/mcp`) — expose image generation as an AI tool for GitHub Copilot and other MCP clients
 - 🔁 **Reproducible results** with optional seed; random seed when omitted
 - 📦 **Auto-download** — RKNN models fetched from HuggingFace Hub on first run and cached
 
@@ -158,6 +159,85 @@ Options:
 
 ---
 
+## MCP Server (AI Tool Integration)
+
+The serve mode also exposes a **Model Context Protocol** endpoint at `/mcp`, implementing the [MCP Streamable HTTP transport (2025-03-26 spec)](https://modelcontextprotocol.io/specification/2025-03-26/basic/transports#streamable-http). This lets AI assistants like **GitHub Copilot** call the image generator as a tool.
+
+### Available MCP Tools
+
+| Tool | Description |
+|------|-------------|
+| `generate_image` | Generate a 512×512 PNG from a text prompt on the RK3588 NPU |
+
+#### `generate_image` Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `prompt` | string | **required** | Text description of the image |
+| `steps` | integer | `4` | LCM denoising steps |
+| `guidance_scale` | float | `7.5` | Classifier-free guidance scale |
+| `seed` | integer\|null | random | Fixed seed for reproducibility |
+
+### GitHub Copilot / VS Code Setup
+
+Add the server to `.vscode/mcp.json` in your workspace (a pre-filled copy is already included in this repo):
+
+```json
+{
+  "servers": {
+    "dreamshaper": {
+      "type": "http",
+      "url": "http://localhost:8080/mcp"
+    }
+  }
+}
+```
+
+Then start the server and reload VS Code. Copilot Chat will detect the `generate_image` tool automatically.
+
+### Manual MCP curl Workflow
+
+```bash
+# 1. Initialize session
+SESSION=$(curl -s -D - -X POST http://localhost:8080/mcp \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}' \
+  | grep -i "mcp-session-id" | awk '{print $2}' | tr -d '\r')
+
+# 2. Complete handshake
+curl -s -X POST http://localhost:8080/mcp \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "Mcp-Session-Id: $SESSION" \
+  -d '{"jsonrpc":"2.0","method":"notifications/initialized"}'
+
+# 3. List available tools
+curl -s -X POST http://localhost:8080/mcp \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "Mcp-Session-Id: $SESSION" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
+
+# 4. Call generate_image
+curl -s -X POST http://localhost:8080/mcp \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "Mcp-Session-Id: $SESSION" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 3,
+    "method": "tools/call",
+    "params": {
+      "name": "generate_image",
+      "arguments": {"prompt": "a beautiful sunset over the ocean", "steps": 4}
+    }
+  }' | grep -o '"text":"[^"]*"' | sed 's/"text":"//;s/"//' | \
+    grep -o 'base64,[^\\]*' | sed 's/base64,//' | base64 -d > output.png
+```
+
+---
+
 ## Serve Mode (OpenAI-compatible API)
 
 Start the HTTP server:
@@ -171,6 +251,7 @@ Start the HTTP server:
 | Method | Path | Description |
 |--------|------|-------------|
 | `POST` | `/v1/images/generations` | Generate image(s) — OpenAI Images API compatible |
+| `POST` / `GET` | `/mcp` | Model Context Protocol (MCP) endpoint |
 
 ### Request body
 
@@ -257,9 +338,12 @@ LCM-Dreamshaper-V7-rs/
 ├── src/
 │   ├── main.rs        # CLI entry point + subcommands
 │   ├── pipeline.rs    # Shared generation pipeline (model loading, inference)
-│   ├── serve.rs       # OpenAI-compatible HTTP server (axum)
+│   ├── serve.rs       # HTTP server (OpenAI REST + MCP endpoint)
+│   ├── mcp.rs         # MCP handler — generate_image tool
 │   ├── models.rs      # RKNN model wrappers (text encoder, UNet, VAE)
 │   └── scheduler.rs   # LCM noise scheduler
+├── .vscode/
+│   └── mcp.json       # VS Code / GitHub Copilot MCP configuration
 └── Cargo.toml
 ```
 

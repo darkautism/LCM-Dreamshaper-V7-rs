@@ -1,3 +1,4 @@
+mod mcp;
 mod models;
 mod pipeline;
 mod scheduler;
