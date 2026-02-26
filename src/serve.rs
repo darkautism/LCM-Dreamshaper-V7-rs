@@ -139,7 +139,7 @@ async fn generate_images(
 // ─────────────────────────────────────────────────────────────────────────────
 
 pub async fn serve(host: &str, port: u16) -> Result<()> {
-    let pipeline = Pipeline::load()?;
+    let pipeline = tokio::task::block_in_place(Pipeline::load)?;
     let shared = Arc::new(Mutex::new(pipeline));
 
     let app = Router::new()

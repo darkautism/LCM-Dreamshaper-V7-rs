@@ -98,19 +98,19 @@ async fn main() {
             let seed = seed.or(args.seed);
             let output = output.clone().unwrap_or_else(|| args.output.clone());
             let info_only = *info_only || args.info_only;
-            run_generate(prompt, steps, guidance_scale, seed, output, info_only)
+            tokio::task::block_in_place(|| run_generate(prompt, steps, guidance_scale, seed, output, info_only))
         }
         None => {
             // No subcommand → generate mode using top-level flags
             let seed = args.seed.and_then(|s| if s == 0 { None } else { Some(s) });
-            run_generate(
+            tokio::task::block_in_place(|| run_generate(
                 args.prompt.clone(),
                 args.steps,
                 args.guidance_scale,
                 seed,
                 args.output.clone(),
                 args.info_only,
-            )
+            ))
         }
     };
 

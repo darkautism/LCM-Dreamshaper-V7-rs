@@ -82,22 +82,35 @@ pub fn download_models() -> Result<(
 /// Return path to the UNet RKNN model compatible with librknnrt.so 2.3.2.
 /// Prefers locally recompiled model over the HF-hosted 2.3.0-compiled model.
 fn unet_model_path() -> Result<std::path::PathBuf> {
-    // Prefer user's HF repo (kautism) if they uploaded a recompiled UNet there.
-    let api = Api::new().context("Failed to create HF Hub API")?;
-
-    // Try user-provided RKNN first
-    let user_repo = api.model("kautism/LCM_Dreamshaper_v7-RKNN-2.3.2".to_string());
-    match user_repo.get("unet/model.rknn") {
-        Ok(path) => {
-            eprintln!("  (using UNet from HF: kautism/LCM_Dreamshaper_v7-RKNN-2.3.2)");
-            return Ok(path);
-        }
-        Err(_) => {
-            eprintln!("  UNet not found in kautism HF repo; falling back to upstream whaoyang repo");
-        }
+    // 1. Prefer locally recompiled UNet compiled with rknn-toolkit2 2.3.2.
+    //    Run `README.md § "Building the UNet"` to produce this file.
+    let local_path = dirs::cache_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+        .join("lcm-rs")
+        .join("unet_v232.rknn");
+    if local_path.exists() {
+        eprintln!("  (using locally compiled UNet for librknnrt 2.3.2: {})", local_path.display());
+        return Ok(local_path);
     }
 
-    // Fallback to original repo
+    let api = Api::new().context("Failed to create HF Hub API")?;
+
+    // 2. Try kautism HF repo (2.3.2-compiled upload).
+    let user_repo = api.model("kautism/LCM_Dreamshaper_v7-RKNN-2.3.2".to_string());
+    match user_repo.get("unet_v232.rknn") {
+        Ok(path) => {
+            eprintln!("  (using UNet from HF: kautism/LCM_Dreamshaper_v7-RKNN-2.3.2/unet_v232.rknn)");
+            return Ok(path);
+        }
+        Err(_) => {}
+    }
+
+    // 3. Last resort: original 2.3.0-compiled model.
+    //    WARNING: will SIGSEGV on librknnrt.so 2.3.2.
+    //    Recompile the UNet — see README § "Building the UNet".
+    eprintln!("  ⚠️  WARNING: no 2.3.2-compiled UNet found.");
+    eprintln!("  ⚠️  Falling back to 2.3.0 model — expect SIGSEGV on librknnrt.so 2.3.2.");
+    eprintln!("  ⚠️  See README § 'Building the UNet for librknnrt 2.3.2'.");
     let lcm_repo = api.model("whaoyang/LCM-Dreamshaper-V7-ONNX-rk3588-512x512-2.3.0".to_string());
     lcm_repo.get("unet/model.rknn").context("Failed to download unet/model.rknn from fallback repo")
 }
@@ -181,7 +194,14 @@ impl Pipeline {
             .run_with_int32_inputs(&[(0, &input_ids)], &[])
             .context("Text encoder failed")?;
         let expected_emb = MAX_SEQ_LEN * TEXT_EMB_DIM;
-        let text_emb_flat: Vec<f32> = text_emb[..expected_emb.min(text_emb.len())].to_vec();
+        eprintln!("  text encoder output: {} f32 elements (expected {})", text_emb.len(), expected_emb);
+        if text_emb.len() < expected_emb {
+            anyhow::bail!(
+                "Text encoder output too small: got {} elements, need {} ({}×{})",
+                text_emb.len(), expected_emb, MAX_SEQ_LEN, TEXT_EMB_DIM
+            );
+        }
+        let text_emb_flat: Vec<f32> = text_emb[..expected_emb].to_vec();
 
         // Scheduler
         let mut scheduler = LcmScheduler::new();
@@ -204,6 +224,11 @@ impl Pipeline {
         for (step_idx, &timestep) in timesteps.iter().enumerate() {
             eprint!("  step {}/{} (t={}) ...", step_idx + 1, req.steps, timestep);
             let latent_nhwc = nchw_to_nhwc(&latent_nchw, LATENT_C, LATENT_H, LATENT_W);
+            eprintln!(
+                " [sample={} ts_cond={}]",
+                latent_nhwc.len(), ts_cond.len()
+            );
+            eprint!("  step {}/{} (t={}) running UNet ...", step_idx + 1, req.steps, timestep);
             let noise_pred = self.unet
                 .run(&latent_nhwc, timestep as i64, &text_emb_flat, &ts_cond)
                 .with_context(|| format!("UNet step {step_idx} failed"))?;
