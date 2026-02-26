@@ -113,13 +113,48 @@ cp /tmp/unet_rk3588_v232.rknn ~/.cache/lcm-rs/unet_v232.rknn
 
 ## Install
 
+Clone the repository and install the binary into `~/.cargo/bin` with:
+
 ```bash
 git clone https://github.com/darkautism/LCM-Dreamshaper-V7-rs.git
-cd LCM-Dreamshaper-V7-rs/lcm-rs
-cargo build --release
+cd LCM-Dreamshaper-V7-rs
+cargo install --path .
 ```
 
-The binary is at `target/release/dreamshaper-cli`.
+The `dreamshaper-cli` binary will be available on your `$PATH`.
+
+Alternatively, build without installing:
+
+```bash
+cargo build --release
+# binary at target/release/dreamshaper-cli
+```
+
+---
+
+## Running as a System Service (systemd)
+
+A ready-to-use systemd service file is included at [`dreamshaper.service`](dreamshaper.service).
+It uses the `@` instance syntax so you can run it under your own user without modifying the file.
+
+```bash
+# Install the service (replace YOUR_USER with your actual username)
+sudo cp dreamshaper.service /etc/systemd/system/dreamshaper@.service
+sudo systemctl daemon-reload
+
+# Enable and start for your user
+sudo systemctl enable --now dreamshaper@YOUR_USER
+
+# Check status / logs
+systemctl status dreamshaper@YOUR_USER
+journalctl -u dreamshaper@YOUR_USER -f
+```
+
+The service will:
+- Start automatically on boot
+- Restart on failure (after 5 s)
+- Run under your user account with the `render` and `video` supplementary groups for NPU access
+- Serve on `0.0.0.0:8080` (OpenAI REST + MCP endpoints)
 
 ---
 
