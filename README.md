@@ -134,26 +134,30 @@ cargo build --release
 
 ## Running as a System Service (systemd)
 
-A ready-to-use systemd service file is included at [`dreamshaper.service`](dreamshaper.service).
-It uses the `@` instance syntax so you can run it under your own user without modifying the file.
+A ready-to-use **user-level** systemd service file is included at [`dreamshaper.service`](dreamshaper.service).
+No root required — it runs under your own account and inherits your group memberships (including `render` for NPU access).
 
 ```bash
-# Install the service (replace YOUR_USER with your actual username)
-sudo cp dreamshaper.service /etc/systemd/system/dreamshaper@.service
-sudo systemctl daemon-reload
+# Install the service
+mkdir -p ~/.config/systemd/user
+cp dreamshaper.service ~/.config/systemd/user/
+systemctl --user daemon-reload
 
-# Enable and start for your user
-sudo systemctl enable --now dreamshaper@YOUR_USER
+# Enable and start
+systemctl --user enable --now dreamshaper
 
 # Check status / logs
-systemctl status dreamshaper@YOUR_USER
-journalctl -u dreamshaper@YOUR_USER -f
+systemctl --user status dreamshaper
+journalctl --user -u dreamshaper -f
 ```
 
+> **Auto-start on boot (without login):** run `loginctl enable-linger $USER` once.
+> This lets systemd start your user services at boot even before you log in interactively.
+
 The service will:
-- Start automatically on boot
+- Start automatically on boot (after `enable-linger`)
 - Restart on failure (after 5 s)
-- Run under your user account with the `render` and `video` supplementary groups for NPU access
+- Use `%h/.cargo/bin/dreamshaper-cli` (`%h` = your home directory)
 - Serve on `0.0.0.0:8080` (OpenAI REST + MCP endpoints)
 
 ---

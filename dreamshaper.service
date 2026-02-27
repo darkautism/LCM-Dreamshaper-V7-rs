@@ -5,23 +5,13 @@ After=network.target
 
 [Service]
 Type=simple
-# Change to the user that has access to the render group (NPU)
-User=%i
-Group=%i
-# Supplement group for NPU device access
-SupplementaryGroups=render video
-
-ExecStart=/home/%i/.cargo/bin/dreamshaper-cli serve --host 0.0.0.0 --port 8080
+ExecStart=%h/.cargo/bin/dreamshaper-cli serve --host 0.0.0.0 --port 8080
 Restart=on-failure
 RestartSec=5
 
-# Allow the NPU device nodes to be accessed
-DeviceAllow=/dev/dri rw
-
-# Logging
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=dreamshaper
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target

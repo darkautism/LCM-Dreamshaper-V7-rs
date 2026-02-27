@@ -5,9 +5,9 @@ use anyhow::Result;
 use axum::{
     Json, Router,
     extract::State,
-    http::StatusCode,
-    response::IntoResponse,
-    routing::post,
+    http::{HeaderValue, StatusCode, header::ACCEPT},
+    response::{IntoResponse, Response},
+    routing::{any, post},
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use rmcp::transport::{
@@ -15,8 +15,7 @@ use rmcp::transport::{
     streamable_http_server::{session::local::LocalSessionManager, tower::StreamableHttpService},
 };
 use serde::{Deserialize, Serialize};
-use tower_http::cors::CorsLayer;
-use tower_http::trace::TraceLayer;
+use tower_http::{cors::CorsLayer, services::ServeDir, trace::TraceLayer};
 
 use crate::mcp::DreamshaperMcp;
 use crate::pipeline::{GenerateRequest, Pipeline};
@@ -140,6 +139,50 @@ async fn generate_images(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// MCP Accept-header shim
+// Some MCP clients (e.g. VS Code Copilot) send only `Accept: application/json`
+// without `text/event-stream`, causing rmcp to reject with 406 Not Acceptable.
+// We use an axum handler that injects the header before calling StreamableHttpService.
+// ─────────────────────────────────────────────────────────────────────────────
+
+type McpService = StreamableHttpService<DreamshaperMcp, LocalSessionManager>;
+
+#[derive(Clone)]
+struct McpState {
+    service: McpService,
+    base_url: Arc<Mutex<String>>,
+}
+
+async fn mcp_handler(
+    State(state): State<McpState>,
+    mut req: axum::extract::Request,
+) -> Response {
+    // Update base_url from Host header so image URLs reflect the interface
+    // the client actually connected through (LAN, Tailscale, localhost, etc.)
+    if let Some(host) = req.headers().get(axum::http::header::HOST)
+        .and_then(|v| v.to_str().ok())
+    {
+        if let Ok(mut base) = state.base_url.lock() {
+            *base = format!("http://{}", host);
+        }
+    }
+
+    // Inject Accept header so clients that omit text/event-stream still work
+    req.headers_mut().insert(
+        ACCEPT,
+        HeaderValue::from_static("application/json, text/event-stream"),
+    );
+    let mut svc = state.service;
+    match tower::Service::call(&mut svc, req).await {
+        Ok(resp) => {
+            let (parts, body) = resp.into_parts();
+            axum::http::Response::from_parts(parts, axum::body::Body::new(body))
+        }
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Server entry point
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -147,11 +190,20 @@ pub async fn serve(host: &str, port: u16) -> Result<()> {
     let pipeline = tokio::task::block_in_place(Pipeline::load)?;
     let shared = Arc::new(Mutex::new(pipeline));
 
+    // Ensure image output dir exists
+    let image_dir = "/tmp/dreamshaper";
+    std::fs::create_dir_all(image_dir)?;
+
+    // base_url is dynamically updated from the Host header on each MCP request
+    let base_url: Arc<Mutex<String>> = Arc::new(Mutex::new(
+        format!("http://{}:{}", host, port)
+    ));
+
     // MCP Streamable HTTP transport — one handler per session, sharing the pipeline.
     let mcp_shared = shared.clone();
-    let mcp_service: StreamableHttpService<DreamshaperMcp, LocalSessionManager> =
-        StreamableHttpService::new(
-            move || Ok(DreamshaperMcp::new(mcp_shared.clone())),
+    let mcp_base_url = base_url.clone();
+    let mcp_service: McpService = StreamableHttpService::new(
+            move || Ok(DreamshaperMcp::new(mcp_shared.clone(), mcp_base_url.clone())),
             Default::default(),
             StreamableHttpServerConfig {
                 stateful_mode: true,
@@ -159,16 +211,28 @@ pub async fn serve(host: &str, port: u16) -> Result<()> {
             },
         );
 
+    let mcp_state = McpState { service: mcp_service, base_url };
+
+    // Build a two-state router: pipeline for OpenAI REST, mcp_service for MCP.
+    // The mcp_handler injects the Accept header shim so clients that omit
+    // text/event-stream (e.g. VS Code Copilot) are handled transparently.
     let app = Router::new()
         .route("/v1/images/generations", post(generate_images))
-        .nest_service("/mcp", mcp_service)
+        .with_state(shared)
+        .merge(
+            Router::new()
+                .route("/mcp", any(mcp_handler))
+                .route("/mcp/", any(mcp_handler))
+                .with_state(mcp_state)
+        )
+        .nest_service("/images", ServeDir::new(image_dir))
         .layer(CorsLayer::permissive())
-        .layer(TraceLayer::new_for_http())
-        .with_state(shared);
+        .layer(TraceLayer::new_for_http());
 
     let addr = format!("{}:{}", host, port);
     eprintln!("🚀 Serving on http://{}/v1/images/generations  (OpenAI API)", addr);
     eprintln!("🤖 MCP endpoint:  http://{}/mcp  (Model Context Protocol)", addr);
+    eprintln!("🖼️  Images:        http://{}/images/<seed>.png", addr);
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     axum::serve(listener, app).await?;
