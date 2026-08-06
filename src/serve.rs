@@ -7,7 +7,7 @@ use axum::{
     extract::State,
     http::{HeaderValue, StatusCode, header::ACCEPT},
     response::{IntoResponse, Response},
-    routing::{any, post},
+    routing::{any, get, post},
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use rmcp::transport::{
@@ -26,6 +26,7 @@ use crate::pipeline::{GenerateRequest, Pipeline};
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 pub struct ImageGenRequest {
     pub prompt: String,
     /// Number of images (only 1 supported; others ignored)
@@ -39,10 +40,10 @@ pub struct ImageGenRequest {
     pub response_format: String,
     /// Optional seed; omit or set null for a random seed
     pub seed: Option<u64>,
-    /// Number of LCM inference steps (default 10)
+    /// Number of LCM inference steps (default 15)
     #[serde(default = "default_steps")]
     pub steps: usize,
-    /// Guidance scale (default 7.5)
+    /// Guidance scale (default 8.5)
     #[serde(default = "default_guidance_scale")]
     pub guidance_scale: f32,
 }
@@ -50,8 +51,8 @@ pub struct ImageGenRequest {
 fn default_n() -> u32 { 1 }
 fn default_size() -> String { "512x512".to_string() }
 fn default_response_format() -> String { "b64_json".to_string() }
-fn default_steps() -> usize { 10 }
-fn default_guidance_scale() -> f32 { 7.5 }
+fn default_steps() -> usize { 15 }
+fn default_guidance_scale() -> f32 { 8.5 }
 
 #[derive(Debug, Serialize)]
 pub struct ImageData {
@@ -75,6 +76,19 @@ pub struct ErrorDetail {
 #[derive(Debug, Serialize)]
 pub struct ErrorResponse {
     pub error: ErrorDetail,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Health
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+struct HealthResponse {
+    status: &'static str,
+}
+
+async fn health() -> impl IntoResponse {
+    Json(HealthResponse { status: "ok" })
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -161,10 +175,9 @@ async fn mcp_handler(
     // the client actually connected through (LAN, Tailscale, localhost, etc.)
     if let Some(host) = req.headers().get(axum::http::header::HOST)
         .and_then(|v| v.to_str().ok())
+        && let Ok(mut base) = state.base_url.lock()
     {
-        if let Ok(mut base) = state.base_url.lock() {
-            *base = format!("http://{}", host);
-        }
+        *base = format!("http://{}", host);
     }
 
     // Inject Accept header so clients that omit text/event-stream still work
@@ -217,6 +230,7 @@ pub async fn serve(host: &str, port: u16) -> Result<()> {
     // The mcp_handler injects the Accept header shim so clients that omit
     // text/event-stream (e.g. VS Code Copilot) are handled transparently.
     let app = Router::new()
+        .route("/health", get(health))
         .route("/v1/images/generations", post(generate_images))
         .with_state(shared)
         .merge(
@@ -231,6 +245,7 @@ pub async fn serve(host: &str, port: u16) -> Result<()> {
 
     let addr = format!("{}:{}", host, port);
     eprintln!("🚀 Serving on http://{}/v1/images/generations  (OpenAI API)", addr);
+    eprintln!("💚 Health:        http://{}/health", addr);
     eprintln!("🤖 MCP endpoint:  http://{}/mcp  (Model Context Protocol)", addr);
     eprintln!("🖼️  Images:        http://{}/images/<seed>.png", addr);
 

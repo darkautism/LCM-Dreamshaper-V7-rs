@@ -1,0 +1,16 @@
+# Dev container for clippy and unit tests (no NPU).
+name: dreamshaper-dev
+
+services:
+  dev:
+    image: dreamshaper-dev
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: dreamshaper-dev
+    user: "${RUNNER_UID:-0}:${RUNNER_GID:-0}"
+    volumes:
+      - .:/app
+    working_dir: /app
+    environment:
+      RKNNRT_LIB_DIR: /app/third_party

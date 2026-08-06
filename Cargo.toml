@@ -29,6 +29,10 @@ tracing-subscriber = "0.3"
 [profile.release]
 opt-level = 3
 
+[lib]
+name = "lcm_dreamshaper_v7_rs"
+path = "src/lib.rs"
+
 [[bin]]
 name = "dreamshaper-cli"
 path = "src/main.rs"
